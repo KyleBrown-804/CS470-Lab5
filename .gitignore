@@ -54,3 +54,5 @@ dkms.conf
 # Lab specific
 *.pdf
 *.vscode
+lab5
+pcbFile.bin
