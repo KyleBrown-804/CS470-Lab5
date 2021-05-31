@@ -11,17 +11,23 @@
 #include <pthread.h>
 #include <atomic>
 #include <queue>
+#include "pcb_queue.h"
 
 // Each PCB is 38 bytes
 #define PCB_SIZE 38
-struct PCB {
-    int8_t priority; // 1 byte
-    char process_name[16]; // 16 bytes
-    int process_id; // 4 bytes
-    int8_t activity_status; // 1 byte
-    int base_register; // 4 bytes
-    long long int limit_register; // 8 bytes
-    int burst_time; // 4 bytes
+// struct PCB {
+//     int8_t priority; // 1 byte
+//     char process_name[16]; // 16 bytes
+//     int process_id; // 4 bytes
+//     int8_t activity_status; // 1 byte
+//     int base_register; // 4 bytes
+//     long long int limit_register; // 8 bytes
+//     int burst_time; // 4 bytes
+// };
+
+struct threadArgs {
+    char * schedType;
+    int loaderIndex;
 };
 
 int NUM_PROCESSORS;
@@ -206,14 +212,22 @@ void allocateProcLoads(FILE * file, char** argv) {
     }
 
     // [For Testing] Printing processor load queues
-    // for (int i = 0, p = 0; i < NUM_PROCESSORS; i++) {
-    //     for (int j = p; j <= loadLimit[i]; j++) {
-    //         printPCB(procLoads[i].front());
-    //         procLoads[i].pop();
-    //     }
-    //     printf("----------------------------------\n");
-    //     p = loadLimit[i] + 1;
-    // }
+    for (int i = 0, p = 0; i < NUM_PROCESSORS; i++) {
+        for (int j = p; j <= loadLimit[i]; j++) {
+            printPCB(procLoads[i].front());
+            procLoads[i].pop();
+        }
+        printf("----------------------------------\n");
+        p = loadLimit[i] + 1;
+    }
+}
+
+void * processorThread(void * args) {
+
+    struct threadArgs *t_arg = (struct threadArgs*) args;
+
+
+    return nullptr;
 }
 
 int main(int argc, char** argv) {
@@ -243,17 +257,26 @@ int main(int argc, char** argv) {
     allocateProcLoads(pcbFile, argv);
 
     // Prepares the schedule type to be passed to each thread
-    // char** scheduleType[NUM_PROCESSORS]; // <-- fix this intialization
-    // for (int i = (NUM_PROCESSORS +2), j = 0; i < argc-1; i++, j++) {
-    //     scheduleType[j] = argv[i];
-    // }
-    
-    // for (int i = 0; i < NUM_PROCESSORS; i++)
-    //     printf("%s\n", scheduleType[i]);
+    //char** scheduleType[NUM_PROCESSORS];
+    std::vector<char *> scheduleType;
+    for (int i = (NUM_PROCESSORS +2), j = 0; i < argc-1; i++, j++) {
+        scheduleType.push_back(argv[i]);
+    }
+
+    // Allocates structs to pass as arguments to the processor threads    
+    struct threadArgs *t_args = (struct threadArgs*) malloc(NUM_PROCESSORS * sizeof(*t_args));
+    for (int i = 0; i < NUM_PROCESSORS; i++) {
+        t_args[i].loaderIndex = i;
+        t_args[i].schedType = scheduleType.at(i);
+    }
 
     // Creating threads for the number of processors specified
     pthread_t processors[NUM_PROCESSORS];
+    for (int i = 0; i < NUM_PROCESSORS; i++)
+        pthread_create(&processors[i], NULL, processorThread, &t_args[i]);
 
+    for (int i = 0; i < NUM_PROCESSORS; i++)
+        pthread_join(processors[i], NULL);
 
     return 0;
 }
