@@ -15,15 +15,6 @@
 
 // Each PCB is 38 bytes
 #define PCB_SIZE 38
-// struct PCB {
-//     int8_t priority; // 1 byte
-//     char process_name[16]; // 16 bytes
-//     int process_id; // 4 bytes
-//     int8_t activity_status; // 1 byte
-//     int base_register; // 4 bytes
-//     long long int limit_register; // 8 bytes
-//     int burst_time; // 4 bytes
-// };
 
 struct threadArgs {
     char * schedType;
@@ -33,7 +24,8 @@ struct threadArgs {
 int NUM_PROCESSORS;
 int NUM_PCBS;
 std::vector<PCB*> pcbList;
-std::vector<std::queue<PCB*>> procLoads;
+std::vector<pcb_queue> procLoads;
+
 std::string argsErrMsg = "\nInvalid arguments! Usage:\n<executable> <# processors (n)> "
                         "<proc 1 %> ... <proc N %> <proc 1 type> ... <proc N type> <pcbFile.bin>\n";
 
@@ -183,7 +175,7 @@ void allocateProcLoads(FILE * file, char** argv) {
     
     // Creating load queues for each processor
     for (int i = 0; i < NUM_PROCESSORS; i++)
-        procLoads.push_back(std::queue<PCB*>());
+        procLoads.push_back(pcb_queue());
 
     // Splitting PCB's into load percentages for each processor
     float loadPercents[NUM_PROCESSORS];
@@ -212,14 +204,13 @@ void allocateProcLoads(FILE * file, char** argv) {
     }
 
     // [For Testing] Printing processor load queues
-    for (int i = 0, p = 0; i < NUM_PROCESSORS; i++) {
-        for (int j = p; j <= loadLimit[i]; j++) {
-            printPCB(procLoads[i].front());
-            procLoads[i].pop();
-        }
-        printf("----------------------------------\n");
-        p = loadLimit[i] + 1;
-    }
+    // for (int i = 0, p = 0; i < NUM_PROCESSORS; i++) {
+    //     for (int j = p; j <= loadLimit[i]; j++) {
+    //         printPCB(procLoads[i].pop());
+    //     }
+    //     printf("----------------------------------\n");
+    //     p = loadLimit[i] + 1;
+    // }
 }
 
 void * processorThread(void * args) {
@@ -277,6 +268,9 @@ int main(int argc, char** argv) {
 
     for (int i = 0; i < NUM_PROCESSORS; i++)
         pthread_join(processors[i], NULL);
+
+
+    // [ ----- Deallocations ----- ]
 
     return 0;
 }
