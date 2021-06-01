@@ -21,6 +21,12 @@ struct threadArgs {
     int loaderIndex;
 };
 
+// Set "timeRatioMilli" to how long 1 burst_time unit should be in milliseconds
+// [Example] 100 milliseconds * 30 burst_time units = 3 seconds
+int timeRatioMilli = 100;
+int burstRatioNano = timeRatioMilli * 1000000; // converts to nano for nanosleep 
+int rrTimeQuantum = 2;
+
 int NUM_PROCESSORS;
 int NUM_PCBS;
 std::vector<PCB*> pcbList;
@@ -213,6 +219,94 @@ void allocateProcLoads(FILE * file, char** argv) {
     // }
 }
 
+long long int shortestJobFirst(int loadIndex) {
+    
+    long long int memoryUsed = 0;
+    struct timespec processorWait;
+    processorWait.tv_sec = 0;
+
+    // Sorts pcb_queue by shortest to longest jobs
+    procLoads[loadIndex].sortByBurst();
+
+    // While the processor's job queue is non-empty will keep processing PCB's
+    while(! procLoads[loadIndex].empty()) {
+
+        struct PCB *currPCB = procLoads[loadIndex].pop();
+
+        int memBlock = currPCB->limit_register - currPCB->base_register;
+        memoryUsed += memBlock;
+
+        // Decreases burst time and sleeps for proportional time to burst_time
+        long sleepTime = burstRatioNano * currPCB->burst_time;
+        currPCB->burst_time = 0;
+        processorWait.tv_nsec = sleepTime;
+
+        nanosleep(&processorWait, NULL);
+    }
+
+    return memoryUsed;
+}
+
+long long int roundRobin(int loadIndex) {
+
+    long long int memoryUsed = 0;
+    struct timespec processorWait;
+    processorWait.tv_sec = 0;
+
+    // While the processor's job queue is non-empty will keep processing PCB's
+    while(! procLoads[loadIndex].empty()) {
+
+        struct PCB *currPCB = procLoads[loadIndex].pop();
+
+        int memBlock = currPCB->limit_register - currPCB->base_register;
+        memoryUsed += memBlock;
+
+        // Simulates a round robin cycling after a given time quantum
+        long sleepTime = burstRatioNano * rrTimeQuantum;
+        currPCB->burst_time -= 20;
+        processorWait.tv_nsec = sleepTime;
+        nanosleep(&processorWait, NULL);
+
+        if (currPCB->burst_time > 0)
+            procLoads[loadIndex].push(currPCB);
+
+    }
+
+    return memoryUsed;
+}
+
+long long int prioritySchedule(int loadIndex) {
+    return 1;
+}
+
+long long int firstComeFirstServe(int loadIndex) {
+
+    long long int memoryUsed = 0;
+    struct timespec processorWait;
+    processorWait.tv_sec = 0;
+
+    // Sorts by FCFS, meaning the order the processes came in originally (PID)
+    procLoads[loadIndex].sortByPID();
+
+    // While the processor's job queue is non-empty will keep processing PCB's
+    while(! procLoads[loadIndex].empty()) {
+
+        struct PCB *currPCB = procLoads[loadIndex].pop();
+
+        int memBlock = currPCB->limit_register - currPCB->base_register;
+        memoryUsed += memBlock;
+
+        // Decreases burst time and sleeps for proportional time to burst_time
+        long sleepTime = burstRatioNano * currPCB->burst_time;
+        currPCB->burst_time = 0;
+        processorWait.tv_nsec = sleepTime;
+
+        nanosleep(&processorWait, NULL);
+    }
+
+    return memoryUsed;
+}
+
 void * processorThread(void * args) {
 
     struct threadArgs *t_arg = (struct threadArgs*) args;
@@ -271,6 +365,9 @@ int main(int argc, char** argv) {
 
 
     // [ ----- Deallocations ----- ]
+    for (int i = 0; i < NUM_PCBS; i++)
+        free(pcbList[i]);
 
+    printf("\nDone\n");
     return 0;
 }

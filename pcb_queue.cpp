@@ -7,6 +7,14 @@ PCB* pcb_queue::at(int index) {
     return p_queue.at(index);
 }
 
+bool pcb_queue::empty() {
+    return p_queue.empty();
+}
+
+int pcb_queue::size(){
+    return (int)p_queue.size();
+}
+
 void pcb_queue::push(PCB *elem) {
     p_queue.push_back(elem);
 }

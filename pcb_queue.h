@@ -30,6 +30,8 @@ class pcb_queue {
         ~pcb_queue();
 
         PCB* at(int index);
+        bool empty();
+        int size();
         void push(PCB *elem);
         PCB* pop();
 
