@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <ctime>
 #include <pthread.h>
+#include <mutex>
 #include <atomic>
 #include <queue>
 #include "pcb_queue.h"
@@ -28,9 +29,13 @@ int burstRatioNano = timeRatioMilli * 1000000; // converts to nano for nanosleep
 int rrTimeQuantum = 2;
 
 int NUM_PROCESSORS;
+int NUM_PRIOR_PROCS;
 int NUM_PCBS;
+std::vector<int> priorityIndices;
+std::atomic<int> TOTAL_PCB_MEMORY;
 std::vector<PCB*> pcbList;
 std::vector<pcb_queue> procLoads;
+std::vector<std::mutex> agingLocks;
 
 std::string argsErrMsg = "\nInvalid arguments! Usage:\n<executable> <# processors (n)> "
                         "<proc 1 %> ... <proc N %> <proc 1 type> ... <proc N type> <pcbFile.bin>\n";
@@ -172,6 +177,20 @@ void printPCB(struct PCB* pcb) {
     }
 }
 
+// Calculates seconds and remainder nanoseconds for use with nanosleep
+struct timespec calcWaitTime(int burst) {
+
+    struct timespec waitTime;
+    long long int sleepTime = burstRatioNano * burst * 10;
+    int seconds = sleepTime / 1000000000;
+    long long int remainderNano = sleepTime - (seconds * 1000000000);
+
+    waitTime.tv_sec = seconds;
+    waitTime.tv_nsec = remainderNano;
+
+    return waitTime;
+}
+
 // Splits the load of PCB's for each processor's specified load percentage
 void allocateProcLoads(FILE * file, char** argv) {
     
@@ -222,26 +241,29 @@ void allocateProcLoads(FILE * file, char** argv) {
 long long int shortestJobFirst(int loadIndex) {
     
     long long int memoryUsed = 0;
-    struct timespec processorWait;
-    processorWait.tv_sec = 0;
 
     // Sorts pcb_queue by shortest to longest jobs
     procLoads[loadIndex].sortByBurst();
 
     // While the processor's job queue is non-empty will keep processing PCB's
     while(! procLoads[loadIndex].empty()) {
-
         struct PCB *currPCB = procLoads[loadIndex].pop();
+        printf("[Processor #%d] (SJF) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
 
         int memBlock = currPCB->limit_register - currPCB->base_register;
         memoryUsed += memBlock;
 
         // Decreases burst time and sleeps for proportional time to burst_time
-        long sleepTime = burstRatioNano * currPCB->burst_time;
+        struct timespec timeWait = calcWaitTime(currPCB->burst_time);
+        float secFormat = (float)currPCB->burst_time / 10;
+        printf("[Processor #%d] (SJF) Sleeping for %.2f secs...\n", loadIndex, secFormat);
         currPCB->burst_time = 0;
-        processorWait.tv_nsec = sleepTime;
 
-        nanosleep(&processorWait, NULL);
+        if (secFormat <= 0)
+            sleep(1);
+        else
+            sleep((int)secFormat);
+        //nanosleep(&timeWait, NULL);
     }
 
     return memoryUsed;
@@ -250,68 +272,146 @@ long long int shortestJobFirst(int loadIndex) {
 long long int roundRobin(int loadIndex) {
 
     long long int memoryUsed = 0;
-    struct timespec processorWait;
-    processorWait.tv_sec = 0;
 
     // While the processor's job queue is non-empty will keep processing PCB's
     while(! procLoads[loadIndex].empty()) {
-
         struct PCB *currPCB = procLoads[loadIndex].pop();
+        printf("[Processor #%d] (RR) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
 
         int memBlock = currPCB->limit_register - currPCB->base_register;
         memoryUsed += memBlock;
 
         // Simulates a round robin cycling after a given time quantum
-        long sleepTime = burstRatioNano * rrTimeQuantum;
-        currPCB->burst_time -= 20;
-        processorWait.tv_nsec = sleepTime;
-        nanosleep(&processorWait, NULL);
+        if (currPCB->burst_time >= 20) {
+            currPCB->burst_time -= 20;
+            printf("[Processor #%d] (RR) processing for 2 seconds...\n", loadIndex);
+            sleep(rrTimeQuantum);
+        }
 
-        if (currPCB->burst_time > 0)
+        else {
+            struct timespec waitTime = calcWaitTime(currPCB->burst_time);
+            float secFormat = (float)currPCB->burst_time / 10;
+            currPCB->burst_time = 0;
+            printf("[Processor #%d] (RR) processing remaining burst time for %.2f seconds\n", loadIndex, secFormat);
+            nanosleep(&waitTime, NULL);
+        }
+
+
+        if (currPCB->burst_time > 0) {
+            printf("[Processor #%d] (RR) pushing PCB back to queue\n", loadIndex);
             procLoads[loadIndex].push(currPCB);
-
+        }
     }
 
     return memoryUsed;
 }
 
 long long int prioritySchedule(int loadIndex) {
+    
+    long long int memoryUsed = 0;
+
+    // Initially sorts PCB's by the highest priority first to lowest priority
+    procLoads[loadIndex].sortByPriority();
+
+    // While the processor's job queue is non-empty will keep processing PCB's
+    while(! procLoads[loadIndex].empty()) {
+
+        agingLocks[loadIndex].lock();
+            struct PCB *currPCB = procLoads[loadIndex].pop();
+            printf("[Processor #%d] (Priority) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
+            
+            int memBlock = currPCB->limit_register - currPCB->base_register;
+            memoryUsed += memBlock;
+
+            // Decreases burst time and sleeps for proportional time to burst_time
+            struct timespec timeWait = calcWaitTime(currPCB->burst_time);
+            float secFormat = (float)currPCB->burst_time / 10;
+            printf("[Processor #%d] (Priority) Sleeping for %.2f secs...\n", loadIndex, secFormat);
+            currPCB->burst_time = 0;
+            agingLocks[loadIndex].unlock();
+
+        if (secFormat <= 0)
+            sleep(1);
+        else
+            sleep((int)secFormat);
+        //nanosleep(&timeWait, NULL);
+    }
+
+    return memoryUsed;
+
     return 1;
 }
 
 long long int firstComeFirstServe(int loadIndex) {
 
     long long int memoryUsed = 0;
-    struct timespec processorWait;
-    processorWait.tv_sec = 0;
-
-    // Sorts by FCFS, meaning the order the processes came in originally (PID)
-    procLoads[loadIndex].sortByPID();
 
     // While the processor's job queue is non-empty will keep processing PCB's
     while(! procLoads[loadIndex].empty()) {
-
         struct PCB *currPCB = procLoads[loadIndex].pop();
-
+        printf("[Processor #%d] (FCFS) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
+        
         int memBlock = currPCB->limit_register - currPCB->base_register;
         memoryUsed += memBlock;
 
         // Decreases burst time and sleeps for proportional time to burst_time
-        long sleepTime = burstRatioNano * currPCB->burst_time;
+        struct timespec timeWait = calcWaitTime(currPCB->burst_time);
+        float secFormat = (float)currPCB->burst_time / 10;
+        printf("[Processor #%d] (FCFS) Sleeping for %.2f secs...\n", loadIndex, secFormat);
         currPCB->burst_time = 0;
-        processorWait.tv_nsec = sleepTime;
 
-        nanosleep(&processorWait, NULL);
+        if (secFormat <= 0)
+            sleep(1);
+        else
+            sleep((int)secFormat);
+        //nanosleep(&timeWait, NULL);
     }
 
     return memoryUsed;
 }
 
+void * agingThread(void * args) {
+   
+    int loaderIndex = *((int*) args);
+    while (! procLoads[loaderIndex].empty()) {
+        sleep(20);
+
+        // Mutex locking avoids array out of bounds when indexing/resorting
+        // while the priority scheduler may be trying to pop off and resize the queue
+        agingLocks[loaderIndex].lock();
+            printf("Aging priorities for [Processor #%d]\n", loaderIndex);
+
+            for (int i = 0 ; i < procLoads[loaderIndex].size(); i++)
+                procLoads[loaderIndex].at(i)->priority += 1;
+
+            procLoads[loaderIndex].sortByPriority();
+
+            printf("Priorities have been aged for [Processor #%d] aging again in 20 seconds\n", loaderIndex);
+        agingLocks[loaderIndex].unlock();
+    }
+    
+    return nullptr;
+}
+
 void * processorThread(void * args) {
 
     struct threadArgs *t_arg = (struct threadArgs*) args;
+    std::string schedType = t_arg->schedType;
+    int poolMemTotal = 0;
 
+    if (schedType == "sjf")
+        poolMemTotal = shortestJobFirst(t_arg->loaderIndex);
 
+    else if (schedType == "fcfs")
+        poolMemTotal = firstComeFirstServe(t_arg->loaderIndex);
+
+    else if (schedType == "rr")
+        poolMemTotal = roundRobin(t_arg->loaderIndex);
+
+    else if (schedType == "pr")
+        poolMemTotal = prioritySchedule(t_arg->loaderIndex);
+
+    TOTAL_PCB_MEMORY += poolMemTotal;
     return nullptr;
 }
 
@@ -341,11 +441,17 @@ int main(int argc, char** argv) {
     // Handles splitting the processor loads specified
     allocateProcLoads(pcbFile, argv);
 
-    // Prepares the schedule type to be passed to each thread
-    //char** scheduleType[NUM_PROCESSORS];
+    // Prepares the schedule type to be passed to each thread and tracks
+    // the number of processors with a priority scheduling type
     std::vector<char *> scheduleType;
+    NUM_PRIOR_PROCS = 0;
     for (int i = (NUM_PROCESSORS +2), j = 0; i < argc-1; i++, j++) {
         scheduleType.push_back(argv[i]);
+        std::string currType = argv[i];
+        if (currType == "pr") {
+            NUM_PRIOR_PROCS++;
+            priorityIndices.push_back(j);
+        }
     }
 
     // Allocates structs to pass as arguments to the processor threads    
@@ -355,14 +461,44 @@ int main(int argc, char** argv) {
         t_args[i].schedType = scheduleType.at(i);
     }
 
+    // Reallocates mutexes for each aging thread to use with corresponding
+    // priority threads now that the number of priority threads is known
+    agingLocks = std::vector<std::mutex>(NUM_PRIOR_PROCS);
+
     // Creating threads for the number of processors specified
     pthread_t processors[NUM_PROCESSORS];
     for (int i = 0; i < NUM_PROCESSORS; i++)
         pthread_create(&processors[i], NULL, processorThread, &t_args[i]);
 
+    pthread_t agingThreads[NUM_PRIOR_PROCS];
+    for (int i = 0; i < NUM_PRIOR_PROCS; i++)
+        pthread_create(&agingThreads[i], NULL, agingThread,(void*)&priorityIndices[i]);
+
+    bool queuePool[NUM_PROCESSORS];
+    for (int i = 0; i < NUM_PROCESSORS; i++)
+        queuePool[i] = false;
+
+    while (true) {
+        sleep(2);
+
+        for (int i = 0; i < NUM_PROCESSORS; i++) {
+            if (procLoads[i].empty())
+                queuePool[i] = true;
+        }
+
+        for (int i = 0 ; i < NUM_PROCESSORS; i++) {
+            if (! queuePool[i])
+                continue;
+        }
+
+        break;
+    }
+    
     for (int i = 0; i < NUM_PROCESSORS; i++)
         pthread_join(processors[i], NULL);
 
+    for (int i = 0; i < NUM_PRIOR_PROCS; i++)
+        pthread_join(agingThreads[i], NULL);
 
     // [ ----- Deallocations ----- ]
     for (int i = 0; i < NUM_PCBS; i++)
