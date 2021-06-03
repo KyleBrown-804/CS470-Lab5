@@ -3,7 +3,6 @@
 * 6/3/2021
 * CS470 Operating Systems Lab 5
 */
-
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
@@ -20,7 +19,6 @@
 #include <queue>
 #include "pcb_queue.h"
 
-// Each PCB is 38 bytes
 #define PCB_SIZE 38
 
 struct threadArgs {
@@ -33,10 +31,6 @@ struct agingThreadArgs {
     int vectorIndex;
 };
 
-// Set "timeRatioMilli" to how long 1 burst_time unit should be in milliseconds
-// [Example] 100 milliseconds * 30 burst_time units = 3 seconds
-int timeRatioMilli = 100;
-int burstRatioNano = timeRatioMilli * 1000000; // converts to nano for nanosleep 
 int rrTimeQuantum = 2;
 int NUM_PROCESSORS;
 int NUM_PRIOR_PROCS;
@@ -53,7 +47,13 @@ std::vector<pcb_queue> procLoads;
 std::string argsErrMsg = "\nInvalid arguments! Usage:\n<executable> <# processors (n)> "
                         "<proc 1 %> ... <proc N %> <proc 1 type> ... <proc N type> <pcbFile.bin>\n";
 
-// Makes a copy bin function in case of corrupting or messing up the binary file
+/*  
+*   -------------------------------------------
+*           Utility Functions Below
+*   -------------------------------------------
+*/
+
+// Makes a copy bin file to keep the integrity of the original
 bool copyBinFile(FILE *binFile, char* fName) {
     FILE *copyFile = fopen("pcbFile.bin", "wb+");
     if (! copyFile) {
@@ -80,6 +80,7 @@ bool copyBinFile(FILE *binFile, char* fName) {
     return true;
 }
 
+// Handles various command line errors and checks the file validity
 bool isValidArgs(int argc, char** argv) {
 
     // Doesn't meet the minimum number of arguments
@@ -154,6 +155,7 @@ bool isValidArgs(int argc, char** argv) {
     return true;
 }
 
+// Reads in 38 bytes from a file stream to create a PCB
 struct PCB* parsePCB(FILE *file) {
     struct PCB* pcb = (struct PCB*) malloc(sizeof(struct PCB));
     if (pcb != nullptr) {
@@ -191,7 +193,7 @@ void printPCB(struct PCB* pcb) {
 }
 
 // The functions "suspendThreads", "resumeThreads", and "checkSuspend"
-// are borrowed from this stack overflow post:
+// are borrowed from the below stack overflow post:
 // https://stackoverflow.com/questions/13662689/what-is-the-best-solution-to-pause-and-resume-pthreads
 void suspendThreads() {
     pthread_mutex_lock(&mutexSuspend);
@@ -212,20 +214,6 @@ void checkSuspend() {
         pthread_cond_wait(&resumeCond, &mutexSuspend);
     }
     pthread_mutex_unlock(&mutexSuspend);
-}
-
-// Calculates seconds and remainder nanoseconds for use with nanosleep
-struct timespec calcWaitTime(int burst) {
-
-    struct timespec waitTime;
-    long long int sleepTime = burstRatioNano * burst * 10;
-    int seconds = sleepTime / 1000000000;
-    long long int remainderNano = sleepTime - (seconds * 1000000000);
-
-    waitTime.tv_sec = seconds;
-    waitTime.tv_nsec = remainderNano;
-
-    return waitTime;
 }
 
 // Splits the load of PCB's for each processor's specified load percentage
@@ -273,12 +261,18 @@ void allocateProcLoads(FILE * file, char** argv) {
     }
 }
 
+
+/*  
+*   -------------------------------------------
+*      Scheduler and Thread Functions Below
+*   -------------------------------------------
+*/
+
 void shortestJobFirst(int loadIndex) {
     
     // Sorts pcb_queue by shortest to longest jobs
     procLoads[loadIndex].sortByBurst();
 
-    // While the processor's job queue is non-empty will keep processing PCB's
     while(IS_COMPLETE != 1) {
 
         // Waits to give loader a chance to assign more work
@@ -294,23 +288,20 @@ void shortestJobFirst(int loadIndex) {
         printf("[Processor #%d] (SJF) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
 
         // Decreases burst time and sleeps for proportional time to burst_time
-        struct timespec timeWait = calcWaitTime(currPCB->burst_time);
         float secFormat = (float)currPCB->burst_time / 10;
         printf("[Processor #%d] (SJF) Sleeping for %.2f secs...\n", loadIndex, secFormat);
-
         currPCB->burst_time = 0;
+
         if (secFormat <= 0)
             sleep(1);
         else
             sleep((int)secFormat);
 
     }
-
 }
 
 void roundRobin(int loadIndex) {
 
-    // While the processor's job queue is non-empty will keep processing PCB's
     while(IS_COMPLETE != 1) {
 
         // Waits to give loader a chance to assign more work
@@ -333,11 +324,10 @@ void roundRobin(int loadIndex) {
         }
 
         else {
-            struct timespec waitTime = calcWaitTime(currPCB->burst_time);
             float secFormat = (float)currPCB->burst_time / 10;
             currPCB->burst_time = 0;
             printf("[Processor #%d] (RR) processing remaining burst time for %.2f seconds\n", loadIndex, secFormat);
-            nanosleep(&waitTime, NULL);
+            sleep((int)secFormat);
         }
 
 
@@ -373,7 +363,6 @@ void prioritySchedule(int loadIndex) {
             printf("[Processor #%d] (Priority) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
 
             // Decreases burst time and sleeps for proportional time to burst_time
-            struct timespec timeWait = calcWaitTime(currPCB->burst_time);
             float secFormat = (float)currPCB->burst_time / 10;
             printf("[Processor #%d] (Priority) Sleeping for %.2f secs...\n", loadIndex, secFormat);
             currPCB->burst_time = 0;
@@ -384,12 +373,10 @@ void prioritySchedule(int loadIndex) {
             sleep((int)secFormat);
 
     }
-
 }
 
 void firstComeFirstServe(int loadIndex) {
 
-    // While the processor's job queue is non-empty will keep processing PCB's
     while(IS_COMPLETE != 1) {
 
         // Waits to give loader a chance to assign more work
@@ -405,7 +392,6 @@ void firstComeFirstServe(int loadIndex) {
         printf("[Processor #%d] (FCFS) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
 
         // Decreases burst time and sleeps for proportional time to burst_time
-        struct timespec timeWait = calcWaitTime(currPCB->burst_time);
         float secFormat = (float)currPCB->burst_time / 10;
         printf("[Processor #%d] (FCFS) Sleeping for %.2f secs...\n", loadIndex, secFormat);
 
@@ -521,6 +507,7 @@ bool loadBalance(int loadIndex) {
     return true;
 }
 
+
 int main(int argc, char** argv) {
 
     if (! isValidArgs(argc, argv))
@@ -588,17 +575,15 @@ int main(int argc, char** argv) {
     pthread_t agingThreads[NUM_PRIOR_PROCS];
     for (int i = 0; i < NUM_PRIOR_PROCS; i++)
         pthread_create(&agingThreads[i], NULL, agingThread, (void*)&priorityIndices[i]);
-    bool queuePool[NUM_PROCESSORS];
-    for (int i = 0; i < NUM_PROCESSORS; i++)
-        queuePool[i] = false;
-
+    
+    
+    // Main thread loop which checks if all processors are done and load balances
     int numEmpty = NUM_PROCESSORS;
-
     while (numEmpty != 0) {
         numEmpty = NUM_PROCESSORS;
         sleep(2);
 
-        // Checks if load balancing is possible and if not then decrements marking a finished processor
+        // Checks if load balancing is possible, if not marks a finished processor
         for (int i = 0; i < NUM_PROCESSORS; i++) {
             if (procLoads[i].empty()) {
                 if (! loadBalance(i)) {
