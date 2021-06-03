@@ -38,6 +38,7 @@ int NUM_PROCESSORS;
 int NUM_PRIOR_PROCS;
 int NUM_PCBS;
 int SUSPEND_FLAG = 0;
+int IS_COMPLETE = 0;
 
 pthread_cond_t resumeCond;
 pthread_mutex_t mutexSuspend;
@@ -261,14 +262,6 @@ void allocateProcLoads(FILE * file, char** argv) {
         p = (loadLimit[i] + 1);
     }
 
-    // [For Testing] Printing processor load queues
-    // for (int i = 0, p = 0; i < NUM_PROCESSORS; i++) {
-    //     for (int j = p; j <= loadLimit[i]; j++) {
-    //         printPCB(procLoads[i].pop());
-    //     }
-    //     printf("----------------------------------\n");
-    //     p = loadLimit[i] + 1;
-    // }
 }
 
 long long int shortestJobFirst(int loadIndex) {
@@ -279,9 +272,16 @@ long long int shortestJobFirst(int loadIndex) {
     procLoads[loadIndex].sortByBurst();
 
     // While the processor's job queue is non-empty will keep processing PCB's
-    while(! procLoads[loadIndex].empty()) {
+    while(IS_COMPLETE != 1) {
+
+        // Waits to give loader a chance to assign more work
+        if (procLoads[loadIndex].empty()) {
+            sleep(2);
+            continue;
+        }
+
         // Checks for signal that load balancer is not moving PCB's
-        //checkSuspend();
+        checkSuspend();
 
         struct PCB *currPCB = procLoads[loadIndex].pop();
         printf("[Processor #%d] (SJF) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
@@ -310,9 +310,16 @@ long long int roundRobin(int loadIndex) {
     long long int memoryUsed = 0;
 
     // While the processor's job queue is non-empty will keep processing PCB's
-    while(! procLoads[loadIndex].empty()) {
+    while(IS_COMPLETE != 1) {
+
+        // Waits to give loader a chance to assign more work
+        if (procLoads[loadIndex].empty()) {
+            sleep(2);
+            continue;
+        }
+
         // Checks for signal that load balancer is not moving PCB's
-        //checkSuspend();
+        checkSuspend();
 
         struct PCB *currPCB = procLoads[loadIndex].pop();
         printf("[Processor #%d] (RR) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
@@ -353,10 +360,16 @@ long long int prioritySchedule(int loadIndex, int ageLockIndex) {
     procLoads[loadIndex].sortByPriority();
 
     // While the processor's job queue is non-empty will keep processing PCB's
-    while(! procLoads[loadIndex].empty()) {
-        
+    while(IS_COMPLETE != 1) {
+
+        // Waits to give loader a chance to assign more work
+        if (procLoads[loadIndex].empty()) {
+            sleep(2);
+            continue;
+        }
+
         // Checks for signal that load balancer is not moving PCB's
-        //checkSuspend();
+        checkSuspend();
 
         pthread_mutex_lock(&agingLock);
             struct PCB *currPCB = procLoads[loadIndex].pop();
@@ -381,8 +394,6 @@ long long int prioritySchedule(int loadIndex, int ageLockIndex) {
     }
 
     return memoryUsed;
-
-    return 1;
 }
 
 long long int firstComeFirstServe(int loadIndex) {
@@ -390,10 +401,16 @@ long long int firstComeFirstServe(int loadIndex) {
     long long int memoryUsed = 0;
 
     // While the processor's job queue is non-empty will keep processing PCB's
-    while(! procLoads[loadIndex].empty()) {
-        
+    while(IS_COMPLETE != 1) {
+
+        // Waits to give loader a chance to assign more work
+        if (procLoads[loadIndex].empty()) {
+            sleep(2);
+            continue;
+        }
+
         // Checks for signal that load balancer is not moving PCB's
-        //checkSuspend();
+        checkSuspend();
 
         struct PCB *currPCB = procLoads[loadIndex].pop();
         printf("[Processor #%d] (FCFS) Popped PCB off queue, PCB burst time: %d\n", loadIndex, currPCB->burst_time);
@@ -421,11 +438,22 @@ void * agingThread(void * args) {
    
     int loaderIndex = *((int*) args);
 
-    while (! procLoads[loaderIndex].empty()) {
+    while(IS_COMPLETE != 1) {
+
+        // Waits to give loader a chance to assign more work to priority threads
+        if (procLoads[loaderIndex].empty()) {
+            sleep(2);
+            continue;
+        }
+
         sleep(20);
 
+        // Safety check to exit early if the priority process finished while sleeping
+        if (procLoads[loaderIndex].empty())
+            continue;
+
         // Checks for signal that load balancer is not moving PCB's
-        // checkSuspend();
+        checkSuspend();
 
         // Mutex locking avoids array out of bounds when indexing/resorting
         // while the priority scheduler may be trying to pop off and resize the queue
@@ -467,44 +495,13 @@ void * processorThread(void * args) {
     }
 
     TOTAL_PCB_MEMORY += poolMemTotal;
+    printf("\n~~~ [PROCESSOR #%d] now exiting ~~~\n", t_arg->loaderIndex);
     return nullptr;
 }
 
-void loadBalance(int loadIndex) {
-
-    int mPoolSize = 0;
-    int maxPoolIndex = 0;
-    for (int i = 0; i < NUM_PROCESSORS; i++) {
-        if (i == loadIndex)
-            continue;
-
-        if (procLoads[i].size() >= maxPoolIndex) {
-            maxPoolIndex = i;
-            break;
-        }
-    }
-
-    // Don't suspend and lock if threads are almost done executing
-    if (procLoads[maxPoolIndex].size() <= 5)
-        return;
-
-
-    // Signal a halt of execution to all other threads
-    // to prevent interference when moving loads
-    suspendThreads();
-    sleep(2);
-
-    printf("\n[ ------------------------------------------------------------------------------------ ]\n");
-    
-    printf("vector size: %ld\n", procLoads.size());
-    for (int i = 0; i < NUM_PROCESSORS; i++) {
-        printf("pool #%d  has %d jobs left\n", i, procLoads[i].size());
-    }
-    
-    printf("[Load Balancing] Calculating the processor with the most jobs and reallocating half...\n");
+bool loadBalance(int loadIndex) {
 
     int max = 0, target = 0;
-
     for (int i = 0; i < NUM_PROCESSORS; i++) {
         if (i == loadIndex)
             continue;
@@ -515,31 +512,30 @@ void loadBalance(int loadIndex) {
         }
     }
 
-    int split = 0;
+    // Don't suspend and lock if threads are almost done executing
+    if (procLoads[target].size() <= 5)
+        return false;
 
-    if (procLoads[target].size() <= 5) {
-        while (! procLoads[target].empty()) {
+    // Signal a halt of execution to all other threads to prevent interference
+    // when moving loads and wait for them to finish their current jobs
+    suspendThreads();
+    sleep(2);
+
+    printf("\n[ ------------------------------------------------------------------------------------ ]\n");
+    printf("[Load Balancing] Calculating the processor with the most jobs and reallocating half...\n");
+
+    int split = procLoads[target].size() / 2;
+    for (int i = 0; i < split; i++) {
         struct PCB* currPCB = procLoads[target].pop();
 
         if (currPCB != nullptr)
             procLoads[loadIndex].push(currPCB);
-            split++;
-        }
-    }
-
-    else {
-        split = procLoads[target].size() / 2;
-        for (int i = 0; i < split; i++) {
-            struct PCB* currPCB = procLoads[target].pop();
-
-            if (currPCB != nullptr)
-                procLoads[loadIndex].push(currPCB);
-        }
     }
 
     printf("[Load Balancing] Complete: [Processor #%d] has taken %d PCB's from [Processor #%d]", loadIndex, split, target);
-    printf("\n[ ------------------------------------------------------------------------------------ ]\n");
+    printf("\n[ ------------------------------------------------------------------------------------ ]\n\n");
     resumeThreads();
+    return true;
 }
 
 int main(int argc, char** argv) {
@@ -595,7 +591,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < NUM_PRIOR_PROCS; i++)
         priorityIndices.push_back(i);
     
-    // Initializes condition variable for load balancing halt execution signal
+    // Initializes condition variable for load balancing and mutex locks
     pthread_mutex_init(&mutexSuspend, NULL);
     pthread_mutex_init(&agingLock, NULL);
     pthread_cond_init(&resumeCond, NULL);
@@ -622,12 +618,15 @@ int main(int argc, char** argv) {
         // Checks if load balancing is possible and if not then decrements marking a finished processor
         for (int i = 0; i < NUM_PROCESSORS; i++) {
             if (procLoads[i].empty()) {
-                //loadBalance(i);
-                numEmpty--;
+                if (! loadBalance(i)) {
+                    numEmpty--;
+                }
             }
         }
     }
 
+    // Signals threads to wrap up as all processor jobs have been completed
+    IS_COMPLETE = 1;
     printf("\nAll processors have completed processing their allocated PCB's\n");
 
     for (int i = 0; i < NUM_PROCESSORS; i++)
@@ -640,9 +639,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < NUM_PCBS; i++)
         free(pcbList[i]);
 
+    free(t_args);
     pthread_cond_destroy(&resumeCond);
-
-    //printf("\nAll processors have completed processing their allocated PCB's\n");
     printf("The total number of memory used by all PCB's was %d bytes\n", TOTAL_PCB_MEMORY.load());
     return 0;
 }
